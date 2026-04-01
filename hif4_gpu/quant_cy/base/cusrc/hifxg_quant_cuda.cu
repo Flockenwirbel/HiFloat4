@@ -8,44 +8,22 @@ using bf16 = at::BFloat16;
 using athalf = at::Half;
 
 
-__device__ __forceinline__ void split_two_fp16(float& src, float& target1, float& target2){
-    unsigned int tmp = *(unsigned int*) &src;
-    unsigned int tmp2 = (tmp & 0xFFFF) << 16;
-    tmp = tmp & 0xFFFF0000;
-    target1 = *(float*) &tmp;
-    target2 = *(float*) &tmp2;
-}
-
-
-__device__ __forceinline__ void combine_two_fp16(float& src1, float& src2, float& target){
-    unsigned int tmp1 = *(unsigned int*) &src1;
-    unsigned int tmp2 = *(unsigned int*) &src2;
-    tmp2 = tmp2 >> 16;
-    tmp1 = tmp1 + tmp2;
-    target = *(float*) &tmp1;
-}
-
-
-__device__ __forceinline__ void load_to_shared(const bf16* x_offset, float* x_shared, int& offset, int idx, const int& n_total){
-    if ((offset + idx * 8)>=n_total){
-        ((float4*) x_shared)[idx*2] = make_float4(0,0,0,0);
-        ((float4*) x_shared)[idx*2+1] = make_float4(0,0,0,0);
-    }else{
-        float4 tmp = ((float4*)x_offset)[idx];
-        split_two_fp16(tmp.x, x_shared[idx*8], x_shared[idx*8+1]);
-        split_two_fp16(tmp.y, x_shared[idx*8+2], x_shared[idx*8+3]);
-        split_two_fp16(tmp.z, x_shared[idx*8+4], x_shared[idx*8+5]);
-        split_two_fp16(tmp.w, x_shared[idx*8+6], x_shared[idx*8+7]);
+__device__ __forceinline__ void load_to_shared(const bf16* x_offset, float* x_shared, int offset, int idx, const int n_total){
+    #pragma unroll
+    for (int j=0; j<8; ++j){
+        int global_idx = offset + idx * 8 + j;
+        x_shared[idx * 8 + j] = (global_idx < n_total) ? (float)x_offset[idx * 8 + j] : 0.0f;
     }
 }
 
 
-__device__ __forceinline__ void store_to_shared(bf16* res_mem, float* res_shared, int& offset, int idx, const int& n_total){
-    if ((offset + idx * 8) < n_total){
-        combine_two_fp16(res_shared[idx*8+0], res_shared[idx*8+1], ((float*) res_mem)[idx*4]);
-        combine_two_fp16(res_shared[idx*8+2], res_shared[idx*8+3], ((float*) res_mem)[idx*4+1]);
-        combine_two_fp16(res_shared[idx*8+4], res_shared[idx*8+5], ((float*) res_mem)[idx*4+2]);
-        combine_two_fp16(res_shared[idx*8+6], res_shared[idx*8+7], ((float*) res_mem)[idx*4+3]);
+__device__ __forceinline__ void store_to_shared(bf16* res_mem, const float* res_shared, int offset, int idx, const int n_total){
+    #pragma unroll
+    for (int j=0; j<8; ++j){
+        int global_idx = offset + idx * 8 + j;
+        if (global_idx < n_total){
+            res_mem[idx * 8 + j] = (bf16)res_shared[idx * 8 + j];
+        }
     }
 }
 
