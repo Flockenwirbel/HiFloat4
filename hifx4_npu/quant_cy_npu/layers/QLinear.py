@@ -35,17 +35,8 @@ class LinearForward(Function):
         x_q = quant_dequant_float(x, qp_in, force_fp32=True)
         w_q = quant_dequant_float(w, qp, force_fp32=True)
 
-        if qp.desc=='hif4':
-            hif4_max = 7680 / 8
-            scale = grad_out.max() / hif4_max
-            grad_out = grad_out / scale
-
-        grad_out_quant = quant_dequant_float(grad_out, qp_in, force_fp32=True) if quant_grad else grad_out  # [B, L, Cout]
+        grad_out_quant = quant_dequant_float(grad_out, qp_in, force_fp32=True) if quant_grad else grad_out  
         grad_out_quant_trans = quant_dequant_float(grad_out.flatten(0,-2).transpose(-1,-2).contiguous(), qp_in, force_fp32=True) if quant_grad else grad_out.flatten(0,-2).transpose(-1,-2)
-        # print(quant_grad, 'qgqg')
-
-        if qp.desc=='hif4':
-            grad_out_quant = grad_out_quant * scale
 
         grad_in = grad_out_quant @ w_q
         grad_w = grad_out_quant_trans @ x_q.flatten(0,-2)
@@ -75,15 +66,7 @@ class LinearForwardFast(Function):
         quant_grad = ctx.quant_grad
         x_q, w_q = ctx.saved_tensors
 
-        if qp.desc=='hif4':
-            hif4_max = 7680 / 8
-            scale = grad_out.max() / hif4_max
-            grad_out = grad_out / scale
-
         grad_out_quant = quant_dequant_float(grad_out, qp_in, force_fp32=True) if quant_grad else grad_out  # [B, L, Cout]
-        
-        if qp.desc=='hif4':
-            grad_out_quant = grad_out_quant * scale
         
         grad_in = grad_out_quant @ w_q
         grad_w = grad_out_quant.flatten(0,-2).transpose(-1,-2) @ x_q.flatten(0,-2)

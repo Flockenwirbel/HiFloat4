@@ -108,7 +108,15 @@ public:
         int n = mn % (shape.N_ceil / BATCH);
         int n_tail = (n+1) * BATCH - shape.N;
         input_empty.wait();
-        copy_gm_to_ubuf(xbuf.get(mn).vptr(), xmtx[m*shape.N + n*BATCH].vptr(), 0, 1, BATCH*sizeof(T)/32, 0, 0);
+        if (n*BATCH+BATCH<=shape.N){
+            copy_gm_to_ubuf(xbuf.get(mn).vptr(), xmtx[m*shape.N + n*BATCH].vptr(), 0, 1, BATCH*sizeof(T)/32, 0, 0);
+        }else{
+            if constexpr(sizeof(T)==2){
+                copy_gm_to_ubuf_align_b16(xbuf.get(mn).vptr(), xmtx[m*shape.N + n*BATCH].vptr(), 0, 1, (shape.N-n*BATCH)*sizeof(T), 0, 0, 0, 0);
+            }else{
+                copy_gm_to_ubuf_align_b32(xbuf.get(mn).vptr(), xmtx[m*shape.N + n*BATCH].vptr(), 0, 1, (shape.N-n*BATCH)*sizeof(T), 0, 0, 0, 0);
+            }
+        }
         input_ready.set();
 
         output_empty.wait();

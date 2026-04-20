@@ -1,8 +1,5 @@
 import numpy as np
 
-import pandas as pd
-import matplotlib.pyplot as plt
-
 def To_MXF4(x, G = 32): 
     # E8 + E2M1, column-wise convert
     # Round Half tie to even
