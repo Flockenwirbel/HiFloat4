@@ -13,3 +13,4 @@ dist/
 *.egg-info/
 *.log
 .ipynb_checkpoints/
+quantized_wan_output/
