@@ -18,7 +18,6 @@ Usage:
 import argparse
 import gc
 import json
-import math
 import os
 import sys
 import time
@@ -32,97 +31,28 @@ _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if _SCRIPT_DIR not in sys.path:
     sys.path.insert(0, _SCRIPT_DIR)
 
+_SRC_DIR = os.path.join(_SCRIPT_DIR, "src")
+if _SRC_DIR not in sys.path:
+    sys.path.insert(0, _SRC_DIR)
+
 from hif4_gpu.quant_cy.utils.utils import replace_linear  # noqa: E402
-
-
-# ---------------------------------------------------------------------------
-# Hadamard Rotation
-# ---------------------------------------------------------------------------
-
-def hadamard_matrix(dim: int, seed: int = 42) -> torch.Tensor:
-    """
-    Randomized Hadamard matrix H ∈ R^{dim×dim}, orthonormal: H^T H = I.
-    Uses Sylvester construction + random ±1 signs per row (Walsh-Hadamard),
-    then scales by 1/√dim.
-    """
-    assert dim > 0 and (dim & (dim - 1)) == 0, f"dim={dim} must be a power of 2"
-    rng = torch.Generator()
-    rng.manual_seed(seed)
-
-    H = torch.tensor([[1.0, 1.0], [1.0, -1.0]], dtype=torch.float32)
-    n = 2
-    while n < dim:
-        H = torch.kron(H, torch.tensor([[1.0, 1.0], [1.0, -1.0]], dtype=torch.float32))
-        n *= 2
-    signs = torch.randint(0, 2, (dim,), generator=rng).float() * 2 - 1
-    H = H * signs.unsqueeze(1)
-    H = H / math.sqrt(dim)
-    return H
-
-
-def apply_hadamard_forward(x: torch.Tensor, H: torch.Tensor) -> torch.Tensor:
-    """Apply Hadamard rotation: x → x @ H^T = x @ H (since H is symmetric)."""
-    orig_dtype = x.dtype
-    return (x.float() @ H.to(device=x.device)).to(orig_dtype)
-
-
-def apply_hadamard_weight(W: torch.Tensor, H: torch.Tensor) -> torch.Tensor:
-    """Rotate weight: W → H @ W so that (x @ H^T) @ (H @ W) = x @ W."""
-    orig_dtype = W.dtype
-    H_dev = H.to(device=W.device, dtype=torch.float32)
-    return (H_dev @ W.float()).to(orig_dtype)
-
-
-def rotate_linear_weights(model: nn.Module, mode: str = "pad",
-                          seed: int = 42) -> Dict[int, torch.Tensor]:
-    """
-    Walk through all nn.Linear layers, generate Hadamard matrices for each
-    unique in_features size, and rotate weights in-place.
-
-    mode='pad': pad to nearest power of 2 (recommended for Wan)
-    mode='block': only works for dims that are already power-of-2
-
-    Returns dict of H matrices keyed by power-of-2 dim.
-    """
-    H_dict: Dict[int, torch.Tensor] = {}
-    rotated_count = 0
-
-    for _name, module in model.named_modules():
-        if not isinstance(module, nn.Linear):
-            continue
-
-        in_f = module.in_features
-        out_f = module.out_features
-
-        if mode == "pad":
-            pow2 = 1
-            while pow2 < in_f:
-                pow2 <<= 1
-        else:  # block
-            pow2 = in_f
-            if (pow2 & (pow2 - 1)) != 0:
-                n2 = 1
-                while n2 < pow2:
-                    n2 <<= 1
-                pow2 = n2
-
-        if pow2 not in H_dict:
-            H_dict[pow2] = hadamard_matrix(pow2, seed=seed + (pow2 * 9973) % 10007)
-
-        H = H_dict[pow2]
-        weight = module.weight.data
-        if mode == "pad" and in_f != pow2:
-            pad_w = torch.zeros(out_f, pow2 - in_f, dtype=weight.dtype, device=weight.device)
-            weight_padded = torch.cat([weight, pad_w], dim=1)
-        else:
-            weight_padded = weight
-
-        weight_rotated = apply_hadamard_weight(weight_padded.T, H).T
-        module.weight.data = weight_rotated.to(weight.dtype)
-        rotated_count += 1
-
-    print(f"[Rotation] Rotated {rotated_count} Linear layers (mode={mode})")
-    return H_dict
+from hifloat4.wan_model_utils import (
+    _build_legacy_wan_init_kwargs,
+    _is_legacy_wan_config,
+    _load_legacy_wan_weights,
+    _load_wan_transformer_with_fallback,
+    _load_wan_weight_index,
+    _read_json,
+    _resolve_wan_load_dir,
+    load_wan_model,
+)
+from hifloat4.wan_rotation import (
+    block_diagonal_hadamard,
+    fwht,
+    hadamard_matrix,
+    register_rotation_hooks,
+    rotate_linear_weights,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -183,9 +113,13 @@ def _read_json(path: str) -> Dict[str, Any]:
 
 
 def _is_legacy_wan_config(config: Dict[str, Any]) -> bool:
-    # Older Wan checkpoints use fields like in_dim/num_heads/out_dim.
+    # Diffusers Wan checkpoints always carry _diffusers_version.
+    # Legacy single-file Wan checkpoints typically do not.
+    if "_diffusers_version" in config:
+        return False
+
     legacy_keys = {"in_dim", "out_dim", "num_heads", "dim"}
-    return any(k in config for k in legacy_keys) or config.get("_class_name") == "WanModel"
+    return any(k in config for k in legacy_keys)
 
 
 def _load_wan_weight_index(load_dir: str) -> Dict[str, str]:
@@ -301,6 +235,31 @@ def _load_legacy_wan_weights(model: nn.Module, load_dir: str, weight_map: Dict[s
     print(f"[Loading] Legacy conversion complete: loaded {len(loaded_keys)} parameters")
 
 
+def _load_wan_transformer_with_fallback(
+    load_dir: str,
+    dtype: torch.dtype,
+) -> nn.Module:
+    from diffusers.models.transformers.transformer_wan import WanTransformer3DModel
+
+    raw_cfg = _read_json(os.path.join(load_dir, "config.json"))
+
+    try:
+        return cast(nn.Module, WanTransformer3DModel.from_pretrained(
+            load_dir,
+            torch_dtype=dtype,
+            low_cpu_mem_usage=True,
+        ))
+    except ValueError as exc:
+        if "expected shape" not in str(exc) and "mismatched sizes" not in str(exc):
+            raise
+
+        weight_map = _load_wan_weight_index(load_dir)
+        init_kwargs = _build_legacy_wan_init_kwargs(load_dir, raw_cfg, weight_map)
+        model = WanTransformer3DModel(**init_kwargs)
+        _load_legacy_wan_weights(model, load_dir, weight_map)
+        return model
+
+
 def _resolve_wan_load_dir(model_path: str) -> str:
     high_noise_dir = os.path.join(model_path, "high_noise_model")
     if os.path.isdir(high_noise_dir) and os.path.isfile(os.path.join(high_noise_dir, "config.json")):
@@ -330,23 +289,7 @@ def load_wan_model(model_path: str, device: str = "cuda",
     if not os.path.isfile(config_path):
         raise FileNotFoundError(f"Missing config file: {config_path}")
 
-    raw_cfg = _read_json(config_path)
-    is_legacy = _is_legacy_wan_config(raw_cfg)
-
-    from diffusers.models.transformers.transformer_wan import WanTransformer3DModel
-
-    model: nn.Module
-    if is_legacy:
-        weight_map = _load_wan_weight_index(load_dir)
-        init_kwargs = _build_legacy_wan_init_kwargs(load_dir, raw_cfg, weight_map)
-        model = WanTransformer3DModel(**init_kwargs)
-        _load_legacy_wan_weights(model, load_dir, weight_map)
-    else:
-        model = cast(nn.Module, WanTransformer3DModel.from_pretrained(
-            load_dir,
-            torch_dtype=dtype,
-            low_cpu_mem_usage=False,
-        ))
+    model = _load_wan_transformer_with_fallback(load_dir, dtype)
 
     print(f"  Loaded: {type(model).__name__}")
 
@@ -382,17 +325,32 @@ def quantize_wan_transformer(
     Apply W4A4 quantization to the Wan transformer.
     Steps: sensitivity → Hadamard rotation → replace Linear→QLinear.
     """
-    high_precision_layers = high_precision_layers or []
+    high_precision_layers = list(dict.fromkeys(high_precision_layers or []))
+
+    if max_high_precision <= 0:
+        high_precision_layers = []
+    elif len(high_precision_layers) > max_high_precision:
+        print(f"[Config] Truncating explicit high-precision list to top {max_high_precision} entries")
+        high_precision_layers = high_precision_layers[:max_high_precision]
 
     # Step 1: Sensitivity
     if not skip_sensitivity and max_high_precision > 0:
-        high_precision_layers = select_high_precision_layers(
+        auto_layers = select_high_precision_layers(
             transformer, quant_type, max_high_precision)
+        # Keep explicit selections first, then fill remaining slots with auto-selected layers.
+        merged = list(high_precision_layers)
+        for name in auto_layers:
+            if len(merged) >= max_high_precision:
+                break
+            if name not in merged:
+                merged.append(name)
+        high_precision_layers = merged
 
     # Step 2: Hadamard rotation
+    H_dict: Dict[int, torch.Tensor] = {}
     if apply_rotation:
         print(f"[Rotation] Applying Hadamard rotation (mode={rotation_mode})...")
-        rotate_linear_weights(transformer, mode=rotation_mode, seed=rotation_seed)
+        H_dict = rotate_linear_weights(transformer, mode=rotation_mode, seed=rotation_seed)
 
     # Step 3: Replace Linear → QLinear
     print(f"[Quantization] Replacing nn.Linear → QLinear (w_Q={quant_type}, in_Q={quant_type})...")
@@ -462,7 +420,8 @@ def main() -> None:
     parser.add_argument("--high-precision-layers", type=str, default=None)
     parser.add_argument("--load-only", action="store_true",
                         help="Only load and validate the transformer, then exit")
-    parser.set_defaults(no_rotation=True, skip_sensitivity=True)
+    # Safer quality-first defaults: enable sensitivity, keep rotation off unless explicit.
+    parser.set_defaults(no_rotation=True, skip_sensitivity=False)
     args = parser.parse_args()
 
     # Validate constraints
@@ -498,6 +457,19 @@ def main() -> None:
     if args.high_precision_layers:
         explicit_layers = [n.strip() for n in args.high_precision_layers.split(",")]
         print(f"[Config] Explicit high-precision layers: {explicit_layers}")
+        if args.max_high_precision_layers <= 0:
+            args.max_high_precision_layers = len(explicit_layers)
+            print(
+                "[Config] max-high-precision-layers not set; "
+                f"using explicit list length={args.max_high_precision_layers}"
+            )
+
+            if args.quant_type == "hifx4" and args.max_high_precision_layers > 2:
+                print("[Warn] HiF4 allows max 2 high-precision layers, capping to 2")
+                args.max_high_precision_layers = 2
+            elif args.quant_type == "mxfp4" and args.max_high_precision_layers > 5:
+                print("[Warn] MXFP4 allows max 5 high-precision layers, capping to 5")
+                args.max_high_precision_layers = 5
 
     t0 = time.time()
     transformer = quantize_wan_transformer(
@@ -524,6 +496,8 @@ def main() -> None:
         "dtype": args.dtype,
     }
     save_quantized_model(transformer, args.output_dir, metadata)
+
+    # No need to save H_dict — FWHT reconstructs rotation from metadata (seed + dims)
 
     print()
     print("=" * 60)

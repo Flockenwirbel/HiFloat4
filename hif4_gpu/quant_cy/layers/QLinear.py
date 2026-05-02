@@ -112,9 +112,9 @@ class QLinear(nn.Linear):
     def transfer(self, layer: Union['QLinear', nn.Linear]):
         self.to(layer.weight.device)
         self.to(layer.weight.dtype)
-        self.weight.data.view(-1)[:] = layer.weight.data.view(-1)[:]
-        if self.bias is not None:
-            self.bias.data[:] = layer.bias.data[:]  # type: ignore
+        self.weight.data.copy_(layer.weight.data.contiguous())
+        if self.bias is not None and layer.bias is not None:
+            self.bias.data.copy_(layer.bias.data.contiguous())  # type: ignore
     
     def assign_qparams(self, Q: Union[QType, str]):
         if isinstance(Q, str):

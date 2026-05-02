@@ -225,9 +225,10 @@ def evaluate_transformer_fidelity(model_path: str,
                                   eval_steps: int,
                                   seed: int) -> Dict[str, float]:
     from quantize_wan import load_wan_model
+    from quantize_wan import block_diagonal_hadamard, register_rotation_hooks
     from hif4_gpu.quant_cy.utils.utils import replace_linear
 
-    state_dict, metadata, _ = _load_quantized_payload(model_path)
+    state_dict, metadata, ckpt_path = _load_quantized_payload(model_path)
 
     source_model_path = metadata.get("model_path") if isinstance(metadata, dict) else None
     if not isinstance(source_model_path, str) or not source_model_path:
@@ -236,6 +237,20 @@ def evaluate_transformer_fidelity(model_path: str,
     quant_type = "hifx4"
     if isinstance(metadata, dict) and isinstance(metadata.get("quant_type"), str):
         quant_type = metadata["quant_type"]
+
+    rotation_mode = "none"
+    rotation_seed = 42
+    if isinstance(metadata, dict):
+        rotation_mode = metadata.get("rotation_mode", "none")
+        rotation_seed = int(metadata.get("rotation_seed", 42))
+
+    use_rotation = rotation_mode != "none"
+
+    # Reconstruct H_dict from metadata for FWHT hooks (no need to save 894MB file)
+    H_dict = None
+    if use_rotation:
+        print("[Eval] Reconstructing Hadamard matrices from metadata for FWHT hooks...")
+        H_dict = {}
 
     print("[Eval] Building BF16 baseline transformer...")
     fp_model = load_wan_model(source_model_path, device=device, dtype=dtype)
@@ -247,8 +262,15 @@ def evaluate_transformer_fidelity(model_path: str,
     if device.startswith("cuda") and torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-    print(f"[Eval] Building W4A4 transformer (quant_type={quant_type})...")
+    print(f"[Eval] Building W4A4 transformer (quant_type={quant_type}, rotation={rotation_mode})...")
     q_model = load_wan_model(source_model_path, device=device, dtype=dtype)
+
+    # NOTE: Do NOT re-rotate weights here. The saved state_dict already contains
+    # rotated weights from the quantization step. We only need to:
+    # 1) Replace Linear → QLinear (matching the structure of the saved state_dict)
+    # 2) Load the already-rotated+quantized state_dict
+    # 3) Register forward pre-hooks for online activation rotation (x → x @ H^T)
+
     replace_linear(
         q_model,
         w_Q=quant_type,
@@ -263,7 +285,26 @@ def evaluate_transformer_fidelity(model_path: str,
     if load_result.missing_keys:
         print(f"[Warn] Missing keys while loading quantized state: {len(load_result.missing_keys)}")
 
+    # Register forward pre-hooks for online activation rotation
+    hooks = []
+    if use_rotation and H_dict is not None:
+        # Reconstruct H_dict if not loaded from file
+        if not H_dict:
+            in_features_set = set()
+            for _name, module in q_model.named_modules():
+                if hasattr(module, 'in_features'):
+                    in_features_set.add(module.in_features)
+            for in_f in in_features_set:
+                H_dict[in_f] = block_diagonal_hadamard(
+                    in_f, seed=rotation_seed + (in_f * 9973) % 10007)
+        hooks = register_rotation_hooks(q_model, H_dict)
+        print(f"[Eval] Registered {len(hooks)} rotation hooks for quantized model forward")
+
     q_outputs, q_latency_ms = _run_model_forward(q_model, eval_inputs, device=device)
+
+    # Clean up hooks
+    for _name, handle in hooks:
+        handle.remove()
 
     del q_model
     gc.collect()
