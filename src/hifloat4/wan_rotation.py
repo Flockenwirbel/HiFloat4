@@ -97,10 +97,12 @@ def register_rotation_hooks(model: nn.Module, H_dict: Dict[int, torch.Tensor]) -
     dim_params: Dict[int, Tuple[List[int], List[torch.Tensor]]] = {}
 
     for name, module in model.named_modules():
-        if not isinstance(module, nn.Linear):
+        # After replace_linear(), nn.Linear becomes QLinear (not an nn.Linear subclass).
+        # Use hasattr to detect any module with in_features that participates in the forward pass.
+        if not isinstance(module, nn.Linear) and not hasattr(module, 'in_features'):
             continue
-        in_f = module.in_features
-        if in_f not in H_dict:
+        in_f = getattr(module, 'in_features', None)
+        if in_f is None or in_f not in H_dict:
             continue
 
         if in_f not in dim_params:

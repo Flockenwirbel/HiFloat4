@@ -406,7 +406,7 @@ def main() -> None:
     parser.add_argument("--output-dir", type=str, default="./quantized_wan_output")
     parser.add_argument("--quant-type", type=str, default="hifx4",
                         choices=["hifx4", "mxfp4"])
-    parser.add_argument("--max-high-precision-layers", type=int, default=0)
+    parser.add_argument("--max-high-precision-layers", type=int, default=2)
     parser.add_argument("--rotation-mode", type=str, default="pad",
                         choices=["pad", "block"])
     parser.add_argument("--rotation-seed", type=int, default=42)
@@ -420,8 +420,10 @@ def main() -> None:
     parser.add_argument("--high-precision-layers", type=str, default=None)
     parser.add_argument("--load-only", action="store_true",
                         help="Only load and validate the transformer, then exit")
-    # Safer quality-first defaults: enable sensitivity, keep rotation off unless explicit.
-    parser.set_defaults(no_rotation=True, skip_sensitivity=False)
+    # Quality-first defaults: enable sensitivity analysis and Hadamard rotation.
+    # Previous defaults (no rotation, 0 high-precision layers) caused catastrophic
+    # quality loss — see https://github.com/Flockenwirbel/HiFloat4/issues/XXX
+    parser.set_defaults(no_rotation=False, skip_sensitivity=False)
     args = parser.parse_args()
 
     # Validate constraints
@@ -486,10 +488,19 @@ def main() -> None:
     elapsed = time.time() - t0
     print(f"[Timing] Quantization completed in {elapsed:.1f}s")
 
+    # Collect the actual high-precision layer names from the quantized model
+    # (layers still using nn.Linear after replace_linear).
+    # IMPORTANT: use `type() is` not `isinstance` because QLinear inherits from nn.Linear.
+    high_prec_actual = [
+        name for name, mod in transformer.named_modules()
+        if type(mod) is nn.Linear
+    ]
+
     metadata = {
         "model_path": args.model_path,
         "quant_type": args.quant_type,
         "max_high_precision_layers": args.max_high_precision_layers,
+        "high_precision_layers": high_prec_actual,
         "rotation_mode": args.rotation_mode if not args.no_rotation else "none",
         "rotation_seed": args.rotation_seed,
         "device": args.device,

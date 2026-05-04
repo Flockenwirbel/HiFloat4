@@ -218,19 +218,6 @@ def _load_vae(model_path: str, device: str, dtype: torch.dtype):
     return vae
 
 
-def _load_image_encoder(device: str, dtype: torch.dtype):
-    from transformers import CLIPVisionModel, CLIPImageProcessor
-
-    clip_dir = "/home/dataset/clip-vit-large-patch14"
-    assert os.path.isdir(clip_dir), f"CLIP model not found at {clip_dir}"
-    print(f"[Pipeline] Loading CLIP image encoder from {clip_dir} ...")
-    image_encoder = CLIPVisionModel.from_pretrained(
-        clip_dir, torch_dtype=dtype).to(device)
-    image_processor = CLIPImageProcessor.from_pretrained(clip_dir)
-    image_encoder.eval()
-    return image_encoder, image_processor
-
-
 def _load_bf16_transformer(model_path: str, device: str, dtype: torch.dtype,
                             subdir: str = "low_noise_model"):
     load_dir = os.path.join(model_path, subdir)
@@ -257,6 +244,9 @@ def _load_quantized_transformer(model_path: str, quantized_path: str,
     rotation_mode = metadata.get("rotation_mode", "none")
     rotation_seed = int(metadata.get("rotation_seed", 42))
     use_rotation = rotation_mode != "none"
+    # Restore the same high-precision layers that were excluded during quantization.
+    # If the metadata doesn't have this field (old checkpoints), default to empty.
+    high_precision_layers = metadata.get("high_precision_layers", [])
 
     print(f"[Pipeline] Loading transformer ({subdir}) from {model_path} ...")
     if subdir == "low_noise_model":
@@ -278,8 +268,12 @@ def _load_quantized_transformer(model_path: str, quantized_path: str,
         transformer = load_wan_model(model_path, device=device, dtype=dtype)
 
     print(f"[Pipeline] Applying {quant_type} quantization structure to {subdir}...")
+    if high_precision_layers:
+        print(f"[Pipeline] Excluding {len(high_precision_layers)} high-precision layers:")
+        for name in high_precision_layers:
+            print(f"  Keeping BF16: {name}")
     replace_linear(transformer, w_Q=quant_type, in_Q=quant_type,
-                   quant_grad=False, exclude_layers=[])
+                   quant_grad=False, exclude_layers=high_precision_layers)
 
     ckpt_path = os.path.join(quantized_path, "quantized_transformer.pt")
     print(f"[Pipeline] Loading weights from {ckpt_path} ...")

@@ -35,10 +35,10 @@ def parse_args():
     p.add_argument("--dtype", type=str, default="bfloat16")
     p.add_argument("--num-videos", type=int, default=0,
                    help="Number of videos to generate (0 = all available)")
-    p.add_argument("--num-frames", type=int, default=81,
-                   help="Number of frames to generate per video (81 ~ 5s @ 16fps)")
-    p.add_argument("--resolution", type=str, default="480p",
-                   help="Resolution: 480p or 720p")
+    p.add_argument("--num-frames", type=int, default=61,
+                   help="Number of frames to generate per video (61 ~ 4s @ 16fps, competition default)")
+    p.add_argument("--resolution", type=str, default="720p",
+                   help="Resolution: 480p or 720p (competition requires 720p)")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--guidance-scale", type=float, default=5.0)
     p.add_argument("--num-inference-steps", type=int, default=50)
@@ -69,7 +69,7 @@ def main():
         pipe = build_quantized_pipeline(args.model_path, args.quantized_path, args.device, dtype)
 
     resolution_map = {"480p": (480, 832), "720p": (720, 1280)}
-    height, width = resolution_map.get(args.resolution, (480, 832))
+    height, width = resolution_map.get(args.resolution, (720, 1280))
 
     print(f"\n[Generate] Generating {len(samples)} videos...")
     print(f"  Resolution: {height}x{width}, Frames: {args.num_frames}")

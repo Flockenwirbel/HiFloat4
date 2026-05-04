@@ -1,5 +1,4 @@
 .DS_Store
-.DS_Store
 __pycache__/
 *.pyc
 *.pyo
@@ -14,3 +13,7 @@ dist/
 *.log
 .ipynb_checkpoints/
 quantized_wan_output/
+generated_videos/
+generated_videos_bf16_baseline/
+pyiqa_model/
+logs/
