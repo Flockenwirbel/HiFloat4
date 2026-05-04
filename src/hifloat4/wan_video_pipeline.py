@@ -300,6 +300,18 @@ def _load_quantized_transformer(model_path: str, quantized_path: str,
         hooks = register_rotation_hooks(transformer, H_dict)
         print(f"[Pipeline] Registered {len(hooks)} FWHT rotation hooks on {subdir}")
 
+    # --- P0: Offline weight pre-quantization for inference speed ---
+    # Weight is static during inference, so quant-dequant it once here
+    # instead of every forward pass.  Stored as BF16 for Tensor Core matmul.
+    from hif4_gpu.quant_cy.layers.QLinear import QLinear as _QLinear
+    n_prequantized = 0
+    for _name, module in transformer.named_modules():
+        if isinstance(module, _QLinear):
+            module.prequantize()
+            n_prequantized += 1
+    print(f"[Pipeline] Pre-quantized {n_prequantized} QLinear layers "
+          f"(weight → BF16, inference-only path active)")
+
     del payload, state_dict
     gc.collect()
     return transformer

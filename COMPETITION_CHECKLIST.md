@@ -163,3 +163,34 @@ srun --partition=Star --gres=gpu:H100:1 --cpus-per-task=4 --mem=32G --time=01:00
    - 尝试不同的 rotation_seed
    - 调整 guidance_scale（当前 5.0）
    - 增加 num_inference_steps（当前 50）
+
+---
+
+## Phase 1 改进记录
+
+### ✅ P0: 权重预量化（已完成）
+
+**问题**：`QLinear.forward` 每步每层都对权重做 `quant_dequant_float(w, qp, force_fp32=True)`，权重在推理时不变，完全多余。
+
+**改动**：
+- `hif4_gpu/quant_cy/layers/QLinear.py`：添加 `prequantize()` 方法 + `_prequantized` 标志 + 优化 forward 路径
+  - 权重一次性 quant-dequant → 存为 BF16
+  - 推理时跳过权重量化，仅量化 activation（`force_fp32=False`，走 BF16）
+  - `F.linear` 自动使用 H100 Tensor Core
+- `src/hifloat4/wan_video_pipeline.py`：在 `_load_quantized_transformer()` 末尾调用 `prequantize()`
+
+**预期加速**：1.5-2×（消除 ~50% 的 FP32 量化开销 + BF16 matmul 利用 Tensor Core）
+
+**状态**：待测试验证 —— 运行 `sbatch scripts/generate_videos.sbatch` 检查：
+1. 日志中应出现 `[Pipeline] Pre-quantized N QLinear layers`
+2. 单步耗时从 ~90s 降至 ~45-60s
+3. 生成视频质量不变
+
+### 🔲 Phase 1 待办
+
+- [ ] **Phase 1b**: Image conditioning 诊断脚本（确认 conditioning 正确传递）
+- [ ] **Phase 1c**: BF16 baseline VBench 生成 + 评估（建立质量基准线）
+- [ ] **Phase 1d**: L2 精度对比脚本（逐层 activation error 分析）
+- [ ] **P1**: BF16 matmul 路径（如果 P0 中 `force_fp32=False` 精度可接受）
+- [ ] **P2**: CUDA kernel 融合（量化+matmul 单 kernel）
+- [ ] **P3**: FWHT rotation 优化（pre-rotate 权重）

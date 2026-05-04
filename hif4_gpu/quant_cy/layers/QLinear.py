@@ -83,12 +83,30 @@ class QLinear(nn.Linear):
         self._quant_grad = True
         self._fast_forward = False
         self._quant_output = False
+        self._prequantized = False
 
     def set_quant_grad(self, value: bool):
         self._quant_grad = value
 
     def set_quant_output(self, value: bool):
         self._quant_output = value
+
+    def prequantize(self):
+        """One-time offline weight quantization for inference.
+
+        Applies quant-dequant to the weight tensor once and caches the result
+        so that every subsequent forward pass skips the expensive per-step
+        weight quantization.  The prequantized weight is stored in BF16 to
+        enable H100 Tensor Core matmul.
+
+        Must be called after `qparams` has been assigned.
+        """
+        assert self.qparams is not None, 'Must assign qparams before prequantize'
+        qp = self.qparams.dim(-1)
+        # quant-dequant in FP32 for accuracy, then store as BF16 for Tensor Core
+        w_q = quant_dequant_float(self.weight.data, qp, force_fp32=True)
+        self.weight.data = w_q.to(self.weight.dtype)
+        self._prequantized = True
 
     def forward(self, x: Tensor):
         assert self.qparams is not None, 'Linear: Must assign quant params (QType) to this layer'
@@ -98,6 +116,17 @@ class QLinear(nn.Linear):
         if not x.is_contiguous():
             x = x.contiguous()
 
+        # ---------- Optimised inference path (weight pre-quantized) ----------
+        if self._prequantized:
+            # Weight already quant-dequanted; only quantize the activation.
+            # Run activation quant in BF16 to trigger Tensor Core matmul.
+            x_q = quant_dequant_float(x, qp_in, force_fp32=False)
+            out = F.linear(x_q, self.weight, self.bias)
+            if self._quant_output:
+                out = quant_dequant_float(out, qp_in, force_fp32=False)
+            return out
+
+        # ---------- Original training / non-prequantized path ----------
         if self._fast_forward:
             out: Optional[Tensor] = LinearForwardFast.apply(x, self.weight, self.bias, qp, qp_in, self._quant_grad)
         else:
