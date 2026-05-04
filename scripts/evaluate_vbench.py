@@ -19,7 +19,7 @@ import sys
 DIMENSIONS = [
     "imaging_quality",       # pyiqa musiq_spaq ✅
     "aesthetic_quality",     # CLIP ViT-L/14 ✅
-    "overall_consistency",   # CLIP ViT-B/32 (text-video alignment) ✅
+    "overall_consistency",   # ViCLIP ViClip-InternVid-10M-FLT ✅
     "subject_consistency",   # DINO ✅
     "motion_smoothness",     # AMT-S ✅
 ]

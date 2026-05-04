@@ -33,31 +33,23 @@ loss_ratio = (BF16_score - Quantized_score) / BF16_score * 100%
 ### 1a. 量化版视频（3 个样本）
 
 ```bash
-srun --partition=Star --gres=gpu:1 --time=60 --job-name=quant_test \
-  --output=logs/quant_test_%j.out --error=logs/quant_test_%j.err \
-  bash -c 'source activate HiFloat4 2>/dev/null; conda activate HiFloat4 2>/dev/null; \
+srun --partition=Star --gres=gpu:H100:1 --cpus-per-task=4 --mem=80G --time=8:00:00 \
+  --job-name=wan_gen --pty bash -c 'source /home/liujh/miniconda3/etc/profile.d/conda.sh && conda activate HiFloat4 && \
   python3 generate_videos.py \
     --quantized-path ./quantized_wan_output \
     --num-videos 3 \
-    --num-inference-steps 50 \
-    --resolution 720p \
-    --num-frames 61 \
-    --output-dir ./quantized_wan_output/generated_videos_test'
+    --num-inference-steps 50'
 ```
 
 ### 1b. BF16 Baseline 视频（相同 3 个样本）
 
 ```bash
-srun --partition=Star --gres=gpu:1 --time=60 --job-name=bf16_test \
-  --output=logs/bf16_test_%j.out --error=logs/bf16_test_%j.err \
-  bash -c 'source activate HiFloat4 2>/dev/null; conda activate HiFloat4 2>/dev/null; \
+srun --partition=Star --gres=gpu:H100:1 --cpus-per-task=4 --mem=80G --time=8:00:00 \
+  --job-name=wan_bf16 --pty bash -c 'source /home/liujh/miniconda3/etc/profile.d/conda.sh && conda activate HiFloat4 && \
   python3 generate_videos.py \
     --bf16-baseline \
     --num-videos 3 \
-    --num-inference-steps 50 \
-    --resolution 720p \
-    --num-frames 61 \
-    --output-dir ./quantized_wan_output/generated_videos_bf16_test'
+    --num-inference-steps 50'
 ```
 
 > **注意**：默认 resolution=720p, num-frames=61 已更新，可以省略这两个参数。
@@ -69,21 +61,19 @@ srun --partition=Star --gres=gpu:1 --time=60 --job-name=bf16_test \
 ### 2a. 评估量化版
 
 ```bash
-srun --partition=Star --gres=gpu:1 --time=30 --job-name=vbench_quant \
-  --output=logs/vbench_quant_%j.out --error=logs/vbench_quant_%j.err \
-  bash -c 'source activate HiFloat4 2>/dev/null; conda activate HiFloat4 2>/dev/null; \
+srun --partition=Star --gres=gpu:H100:1 --cpus-per-task=4 --mem=32G --time=01:00:00 \
+  --job-name=vbench_q --pty bash -c 'source /home/liujh/miniconda3/etc/profile.d/conda.sh && conda activate HiFloat4 && \
   python3 scripts/evaluate_vbench.py \
-    --videos-dir ./quantized_wan_output/generated_videos_test'
+    --videos-dir ./quantized_wan_output/generated_videos_v2'
 ```
 
 ### 2b. 评估 BF16 baseline
 
 ```bash
-srun --partition=Star --gres=gpu:1 --time=30 --job-name=vbench_bf16 \
-  --output=logs/vbench_bf16_%j.out --error=logs/vbench_bf16_%j.err \
-  bash -c 'source activate HiFloat4 2>/dev/null; conda activate HiFloat4 2>/dev/null; \
+srun --partition=Star --gres=gpu:H100:1 --cpus-per-task=4 --mem=32G --time=01:00:00 \
+  --job-name=vbench_bf16 --pty bash -c 'source /home/liujh/miniconda3/etc/profile.d/conda.sh && conda activate HiFloat4 && \
   python3 scripts/evaluate_vbench.py \
-    --videos-dir ./quantized_wan_output/generated_videos_bf16_test'
+    --videos-dir ./generated_videos_bf16_baseline'
 ```
 
 ---
@@ -113,18 +103,52 @@ cat ./quantized_wan_output/generated_videos_bf16_test/vbench_eval/*_eval_results
 
 ---
 
-## 快速一键脚本（可选）
+## 常用 srun 命令（均指定 1×H100，实时输出）
 
-如果希望一次性完成所有步骤，可以创建 sbatch 任务链：
+### 量化
 
 ```bash
-# 先提交量化版生成
-JOB1=$(sbatch --parsable scripts/generate_test.sbatch)
-# 再提交 BF16 baseline 生成
-JOB2=$(sbatch --parsable scripts/generate_test_bf16.sbatch)
-# VBench 评估等两个生成任务完成后运行
-# sbatch --dependency=afterok:${JOB1}:${JOB2} scripts/eval_test_vbench.sbatch
+srun --partition=Star --gres=gpu:H100:1 --cpus-per-task=4 --mem=80G --time=02:00:00 \
+  --job-name=wan_quant --pty bash -c 'source /home/liujh/miniconda3/etc/profile.d/conda.sh && conda activate HiFloat4 && \
+  python3 quantize_wan.py \
+    --model-path /home/dataset/Wan2.2-I2V-A14B \
+    --output-dir ./quantized_wan_output \
+    --quant-type hifx4 \
+    --max-high-precision-layers 2'
 ```
+
+### 生成视频（量化版）
+
+```bash
+srun --partition=Star --gres=gpu:H100:1 --cpus-per-task=4 --mem=80G --time=8:00:00 \
+  --job-name=wan_gen --pty bash -c 'source /home/liujh/miniconda3/etc/profile.d/conda.sh && conda activate HiFloat4 && \
+  python3 generate_videos.py \
+    --quantized-path ./quantized_wan_output \
+    --num-videos 3 \
+    --num-inference-steps 50'
+```
+
+### 生成视频（BF16 baseline）
+
+```bash
+srun --partition=Star --gres=gpu:H100:1 --cpus-per-task=4 --mem=80G --time=8:00:00 \
+  --job-name=wan_bf16 --pty bash -c 'source /home/liujh/miniconda3/etc/profile.d/conda.sh && conda activate HiFloat4 && \
+  python3 generate_videos.py \
+    --bf16-baseline \
+    --num-videos 3 \
+    --num-inference-steps 50'
+```
+
+### VBench 评估
+
+```bash
+srun --partition=Star --gres=gpu:H100:1 --cpus-per-task=4 --mem=32G --time=01:00:00 \
+  --job-name=vbench --pty bash -c 'source /home/liujh/miniconda3/etc/profile.d/conda.sh && conda activate HiFloat4 && \
+  python3 scripts/evaluate_vbench.py --videos-dir <VIDEOS_DIR>'
+```
+
+> **提示**：`--pty` 提供交互式终端，可以实时看到 Python 输出。去掉 `--pty` 则后台运行。
+> sbatch 脚本仍保留在 `scripts/` 目录下供批量提交使用。
 
 ---
 

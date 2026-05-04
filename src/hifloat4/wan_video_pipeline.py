@@ -369,8 +369,12 @@ def build_quantized_pipeline(model_path: str, quantized_path: str,
 
     transformer = _load_quantized_transformer(
         model_path, quantized_path, device, dtype, "high_noise_model")
-    print("[Pipeline] Loading low_noise_model (transformer_2) in BF16...")
-    transformer_2 = _load_bf16_transformer(model_path, device, dtype, "low_noise_model")
+
+    # Pure quantization mode: skip low_noise_model to save ~28GB VRAM.
+    # The quantized high_noise_model handles ALL timesteps (boundary_ratio=None).
+    # This fits on a single H100 80GB.
+    print("[Pipeline] Skipping low_noise_model (pure quantization mode, saves ~28GB VRAM)")
+
     tokenizer, text_encoder = _load_t5_encoder(model_path, device, dtype)
     vae = _load_vae(model_path, device, dtype)
     # NOTE: Wan 2.2 I2V does NOT use CLIP (image_encoder: [null, null] in model_index.json)
@@ -415,14 +419,14 @@ def build_quantized_pipeline(model_path: str, quantized_path: str,
         image_processor=None,
         image_encoder=None,
         transformer=transformer,
-        transformer_2=transformer_2,
-        boundary_ratio=0.9,
+        transformer_2=None,          # No second model — quantized handles all steps
+        boundary_ratio=None,         # No boundary — single model for all timesteps
         expand_timesteps=False,
     )
     pipe = pipe.to(device)
-    print("[Pipeline] Quantized I2V pipeline assembled successfully!")
-    print(f"  transformer  (high_noise): quantized W4A4")
-    print(f"  transformer_2 (low_noise): BF16 (full precision)")
-    print(f"  boundary_ratio=0.9, expand_timesteps=False (14B cat mode)")
+    print("[Pipeline] Pure quantized I2V pipeline assembled successfully!")
+    print(f"  transformer (quantized W4A4): handles ALL timesteps")
+    print(f"  transformer_2: None (saves ~28GB VRAM)")
+    print(f"  boundary_ratio=None (single-model mode)")
     print(f"  CLIP: not loaded (Wan 2.2 I2V doesn't use it)")
     return pipe
