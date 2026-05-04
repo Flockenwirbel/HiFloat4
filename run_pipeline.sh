@@ -32,12 +32,13 @@ DATASET_PATH="datasets/OpenS2V-5M_to_mm.json"
 # --- Quantization parameters ---
 QUANT_TYPE="hifx4"          # hifx4 (max 2 high-precision layers) or mxfp4 (max 5)
 MAX_HIGH_PRECISION=2         # Number of sensitive layers to keep in BF16
-ROTATION_MODE="none"         # Hadamard rotation mode: none, pad, or block
+ROTATION_MODE="pad"          # Hadamard rotation mode: pad (recommended), block, or none
 ROTATION_SEED=42             # Random seed for rotation (reproducibility)
 SKIP_SENSITIVITY=true        # Skip sensitivity analysis (faster)
-NO_ROTATION=true             # Disable Hadamard rotation (recommended for now)
+NO_ROTATION=false            # Hadamard rotation ON by default (critical for W4A4 quality)
 LOAD_ONLY=false              # Only load and validate, skip evaluation
 SKIP_QUANTIZE=false          # Skip Steps 1-2, go directly to video generation
+BF16_BASELINE=false          # Run BF16 baseline (no quantization)
 EVAL_STEPS=4                 # Number of proxy evaluation steps
 VIDEO_METRIC_SAMPLES=8       # Number of video metric samples
 
@@ -99,6 +100,7 @@ while [[ $# -gt 0 ]]; do
         --min-gpu-mem)       MIN_GPU_MEM_MIB="$2";   shift 2 ;;
         --load-only)         LOAD_ONLY=true;         shift   ;;
         --skip-quantize)    SKIP_QUANTIZE=true;      shift   ;;
+        --bf16-baseline)    BF16_BASELINE=true;      shift   ;;
         *) echo "Unknown option: $1"; shift ;;
     esac
 done
@@ -326,6 +328,7 @@ if [ "$GENERATE_VIDEOS" = "true" ]; then
     echo "  Guidance scale   : $GUIDANCE_SCALE"
     echo "  Inference steps  : $NUM_INFERENCE_STEPS"
     echo "  FPS              : $FPS"
+    echo "  BF16 baseline    : $BF16_BASELINE"
     echo "  Output dir       : ${OUTPUT_DIR}/generated_videos"
     echo ""
 
@@ -343,6 +346,10 @@ if [ "$GENERATE_VIDEOS" = "true" ]; then
         --fps "$FPS"
         --seed 42
     )
+
+    if [ "$BF16_BASELINE" = "true" ]; then
+        GEN_ARGS+=(--bf16-baseline)
+    fi
 
     echo "  Command: python generate_videos.py ${GEN_ARGS[*]}"
     python generate_videos.py "${GEN_ARGS[@]}" || echo "[Warn] Video generation exited non-zero"

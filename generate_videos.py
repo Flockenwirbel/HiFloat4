@@ -115,37 +115,17 @@ def main():
 
             video_frames = result.frames[0]
 
-            # FIX: Replace first frame with input image to ensure consistency
-            # This is necessary because expand_timesteps=False doesn't protect first frame
+            # Safety net: Replace first frame with input image to ensure pixel-perfect
+            # consistency. With expand_timesteps=True the first frame latent is already
+            # protected during denoising, but VAE encode/decode may still introduce
+            # minor color shifts. Keeping this replacement as a safeguard.
             input_array = np.array(image.resize((width, height)))
             if input_array.shape[-1] == 3:  # RGB
                 video_frames[0] = input_array / 255.0  # Normalize to [0, 1]
 
-            # Diagnostic: print frame statistics
-            frames_arr = np.array(video_frames)
-            print(f"    Frames dtype={frames_arr.dtype}, shape={frames_arr.shape}")
-            print(f"    Value range: [{frames_arr.min():.4f}, {frames_arr.max():.4f}], "
-                  f"mean={frames_arr.mean():.4f}")
-
-            # Save first frame as PNG for quality inspection
-            from PIL import Image
-            diag_dir = os.path.join(args.output_dir, "diagnostics")
-            os.makedirs(diag_dir, exist_ok=True)
-
-            first_frame = video_frames[0]
-            if isinstance(first_frame, np.ndarray) and first_frame.dtype in (np.float32, np.float64):
-                first_frame = np.clip(first_frame * 255.0, 0, 255).astype(np.uint8)
-            Image.fromarray(first_frame).save(os.path.join(diag_dir, f"{sample_id}_frame0.png"))
-
-            # Save input frame for comparison
-            if first_frame_orig is not None:
-                Image.fromarray(first_frame_orig).save(
-                    os.path.join(diag_dir, f"{sample_id}_input.png"))
-
             save_video_frames_as_mp4(video_frames, output_path, fps=args.fps)
             generated += 1
             print(f"    Saved: {output_path} ({len(video_frames)} frames)")
-            print(f"    Diagnostics: {diag_dir}/")
 
         except Exception as e:
             print(f"    [Error] Generation failed: {e}")

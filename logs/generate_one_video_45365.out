@@ -1,0 +1,80 @@
+copying build/lib.linux-x86_64-cpython-313/hifxg_quant.cpython-313-x86_64-linux-gnu.so -> 
+running build_ext
+W0504 07:53:32.401000 1221160 site-packages/torch/utils/cpp_extension.py:680] Attempted to use ninja as the BuildExtension backend but we could not find ninja.. Falling back to using the slow distutils backend.
+W0504 07:53:32.424000 1221160 site-packages/torch/utils/cpp_extension.py:546] The detected CUDA version (12.9) has a minor version mismatch with the version that was used to compile PyTorch (12.8). Most likely this shouldn't be a problem.
+copying build/lib.linux-x86_64-cpython-313/lowbit_quant.cpython-313-x86_64-linux-gnu.so -> 
+[Dataset] 1 valid samples with accessible videos (from 1000 total)
+[Pipeline] Loading transformer (high_noise_model) from /home/dataset/Wan2.2-I2V-A14B ...
+[Loading] Wan 2.2 transformer from /home/dataset/Wan2.2-I2V-A14B/high_noise_model ...
+[Loading] Creating WanTransformer3DModel with config:
+  patch_size: (1, 2, 2)
+  num_attention_heads: 40
+  attention_head_dim: 128
+  in_channels: 36
+  out_channels: 16
+  text_dim: 4096
+  freq_dim: 256
+  ffn_dim: 13824
+  num_layers: 40
+  cross_attn_norm: True
+  qk_norm: rms_norm_across_heads
+  eps: 1e-06
+  rope_max_seq_len: 1024
+[Loading] Legacy Wan checkpoint detected, converting 6 shards...
+  [1/6] diffusion_pytorch_model-00001-of-00006.safetensors
+  [2/6] diffusion_pytorch_model-00002-of-00006.safetensors
+  [3/6] diffusion_pytorch_model-00003-of-00006.safetensors
+  [4/6] diffusion_pytorch_model-00004-of-00006.safetensors
+  [5/6] diffusion_pytorch_model-00005-of-00006.safetensors
+  [6/6] diffusion_pytorch_model-00006-of-00006.safetensors
+[Loading] Legacy conversion complete: loaded 1095 parameters
+  Loaded: WanTransformer3DModel
+  Transformer loaded: 14.29B total, 14.29B in Linear layers
+[Pipeline] Applying hifx4 quantization structure to high_noise_model...
+[Pipeline] Loading weights from ./quantized_wan_output/quantized_transformer.pt ...
+[Pipeline] Loading low_noise_model (transformer_2) in BF16...
+[Loading] Wan 2.2 transformer from /home/dataset/Wan2.2-I2V-A14B/low_noise_model ...
+[Loading] Creating WanTransformer3DModel with config:
+  patch_size: (1, 2, 2)
+  num_attention_heads: 40
+  attention_head_dim: 128
+  in_channels: 36
+  out_channels: 16
+  text_dim: 4096
+  freq_dim: 256
+  ffn_dim: 13824
+  num_layers: 40
+  cross_attn_norm: True
+  qk_norm: rms_norm_across_heads
+  eps: 1e-06
+  rope_max_seq_len: 1024
+[Loading] Legacy Wan checkpoint detected, converting 6 shards...
+  [1/6] diffusion_pytorch_model-00001-of-00006.safetensors
+  [2/6] diffusion_pytorch_model-00002-of-00006.safetensors
+  [3/6] diffusion_pytorch_model-00003-of-00006.safetensors
+  [4/6] diffusion_pytorch_model-00004-of-00006.safetensors
+  [5/6] diffusion_pytorch_model-00005-of-00006.safetensors
+  [6/6] diffusion_pytorch_model-00006-of-00006.safetensors
+[Loading] Legacy conversion complete: loaded 1095 parameters
+  Loaded: WanTransformer3DModel
+  Transformer loaded: 14.29B total, 14.29B in Linear layers
+  [low_noise_model] Loaded: 14.29B params in BF16
+[Pipeline] Loading UMT5 tokenizer from local copy...
+[Pipeline] Loading T5 encoder from /home/dataset/Wan2.2-I2V-A14B/models_t5_umt5-xxl-enc-bf16.pth ...
+[Pipeline] Loading VAE from /home/dataset/Wan2.2-I2V-A14B/Wan2.1_VAE.pth ...
+[Pipeline] Quantized I2V pipeline assembled successfully!
+  transformer  (high_noise): quantized W4A4
+  transformer_2 (low_noise): BF16 (full precision)
+  boundary_ratio=0.9, expand_timesteps=False (14B cat mode)
+  CLIP: not loaded (Wan 2.2 I2V doesn't use it)
+
+[Generate] Generating 1 videos...
+  Resolution: 480x832, Frames: 81
+  Guidance: 5.0, Steps: 50
+  [1/1] Generating: sample_0000
+    Caption: A man with short, dark hair and a beard, wearing a dark-colored shirt. He is sea...
+    Saved: ./quantized_wan_output/generated_videos/sample_0000.mp4 (81 frames)
+
+[Done] Generated 1/1 videos
+  Output dir: ./quantized_wan_output/generated_videos
+Done at Mon May  4 08:14:14 CST 2026

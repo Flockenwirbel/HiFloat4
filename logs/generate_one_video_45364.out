@@ -1,0 +1,5 @@
+copying build/lib.linux-x86_64-cpython-313/hifxg_quant.cpython-313-x86_64-linux-gnu.so -> 
+running build_ext
+W0504 07:48:45.254000 1220984 site-packages/torch/utils/cpp_extension.py:680] Attempted to use ninja as the BuildExtension backend but we could not find ninja.. Falling back to using the slow distutils backend.
+W0504 07:48:45.276000 1220984 site-packages/torch/utils/cpp_extension.py:546] The detected CUDA version (12.9) has a minor version mismatch with the version that was used to compile PyTorch (12.8). Most likely this shouldn't be a problem.
+copying build/lib.linux-x86_64-cpython-313/lowbit_quant.cpython-313-x86_64-linux-gnu.so -> 

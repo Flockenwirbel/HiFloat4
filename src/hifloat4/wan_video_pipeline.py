@@ -199,37 +199,16 @@ def _load_vae(model_path: str, device: str, dtype: torch.dtype):
 
     print(f"[Pipeline] Loading VAE from {vae_pth} ...")
     vae_sd = torch.load(vae_pth, map_location="cpu", weights_only=True)
-    print(f"  [VAE] Raw checkpoint keys: {len(vae_sd)}")
     converted_sd = convert_wan_vae_to_diffusers(dict(vae_sd))
-    print(f"  [VAE] Converted checkpoint keys: {len(converted_sd)}")
     del vae_sd
     gc.collect()
 
     vae = AutoencoderKLWan()
-    model_keys = set(vae.state_dict().keys())
-    converted_keys = set(converted_sd.keys())
-    missing_from_ckpt = sorted(model_keys - converted_keys)
-    extra_in_ckpt = sorted(converted_keys - model_keys)
-
     load_result = vae.load_state_dict(converted_sd, strict=False)
     if load_result.missing_keys:
-        print(f"  [VAE] WARNING - Missing keys: {len(load_result.missing_keys)}")
-        for k in load_result.missing_keys[:20]:
-            print(f"    MISSING: {k}")
-        if len(load_result.missing_keys) > 20:
-            print(f"    ... and {len(load_result.missing_keys) - 20} more")
+        print(f"  [VAE] Missing keys: {len(load_result.missing_keys)}")
     if load_result.unexpected_keys:
-        print(f"  [VAE] WARNING - Unexpected keys: {len(load_result.unexpected_keys)}")
-        for k in load_result.unexpected_keys[:20]:
-            print(f"    UNEXPECTED: {k}")
-        if len(load_result.unexpected_keys) > 20:
-            print(f"    ... and {len(load_result.unexpected_keys) - 20} more")
-
-    # Print VAE config for debugging
-    print(f"  [VAE] Config: z_dim={vae.config.z_dim}, "
-          f"is_residual={vae.config.is_residual}, "
-          f"scale_factor_spatial={vae.config.scale_factor_spatial}, "
-          f"scale_factor_temporal={vae.config.scale_factor_temporal}")
+        print(f"  [VAE] Unexpected keys: {len(load_result.unexpected_keys)}")
 
     del converted_sd
     gc.collect()
@@ -340,7 +319,10 @@ def build_bf16_pipeline(model_path: str, device: str, dtype: torch.dtype):
     transformer_2 = _load_bf16_transformer(model_path, device, dtype, "low_noise_model")
     tokenizer, text_encoder = _load_t5_encoder(model_path, device, dtype)
     vae = _load_vae(model_path, device, dtype)
-    image_encoder, image_processor = _load_image_encoder(device, dtype)
+    # NOTE: Wan 2.2 I2V does NOT use CLIP image encoder!
+    # model_index.json declares image_encoder: [null, null]
+    # The pipeline checks transformer.config.image_dim and skips CLIP when it's None.
+    # Passing None saves ~1.6GB VRAM.
 
     # Wan 2.2 I2V-A14B official scheduler config from HuggingFace
     # Uses UniPCMultistepScheduler with flow_shift=3.0
@@ -377,12 +359,12 @@ def build_bf16_pipeline(model_path: str, device: str, dtype: torch.dtype):
 
     pipe = WanImageToVideoPipeline(
         tokenizer=tokenizer, text_encoder=text_encoder, vae=vae,
-        scheduler=scheduler, image_processor=image_processor,
-        image_encoder=image_encoder, transformer=transformer,
+        scheduler=scheduler, image_processor=None,
+        image_encoder=None, transformer=transformer,
         transformer_2=transformer_2, boundary_ratio=0.9, expand_timesteps=False,
     )
     pipe = pipe.to(device)
-    print("[Pipeline] BF16 baseline pipeline assembled (no quantization)")
+    print("[Pipeline] BF16 baseline pipeline assembled (no quantization, no CLIP)")
     return pipe
 
 
@@ -397,7 +379,7 @@ def build_quantized_pipeline(model_path: str, quantized_path: str,
     transformer_2 = _load_bf16_transformer(model_path, device, dtype, "low_noise_model")
     tokenizer, text_encoder = _load_t5_encoder(model_path, device, dtype)
     vae = _load_vae(model_path, device, dtype)
-    image_encoder, image_processor = _load_image_encoder(device, dtype)
+    # NOTE: Wan 2.2 I2V does NOT use CLIP (image_encoder: [null, null] in model_index.json)
 
     # Wan 2.2 I2V-A14B official scheduler config from HuggingFace
     scheduler = UniPCMultistepScheduler.from_config({
@@ -436,8 +418,8 @@ def build_quantized_pipeline(model_path: str, quantized_path: str,
         text_encoder=text_encoder,
         vae=vae,
         scheduler=scheduler,
-        image_processor=image_processor,
-        image_encoder=image_encoder,
+        image_processor=None,
+        image_encoder=None,
         transformer=transformer,
         transformer_2=transformer_2,
         boundary_ratio=0.9,
@@ -447,5 +429,6 @@ def build_quantized_pipeline(model_path: str, quantized_path: str,
     print("[Pipeline] Quantized I2V pipeline assembled successfully!")
     print(f"  transformer  (high_noise): quantized W4A4")
     print(f"  transformer_2 (low_noise): BF16 (full precision)")
-    print(f"  boundary_ratio=0.3, expand_timesteps=False (14B cat mode)")
+    print(f"  boundary_ratio=0.9, expand_timesteps=False (14B cat mode)")
+    print(f"  CLIP: not loaded (Wan 2.2 I2V doesn't use it)")
     return pipe
