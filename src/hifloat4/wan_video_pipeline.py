@@ -9,14 +9,7 @@ from typing import List, Optional
 import numpy as np
 import torch
 
-from hifloat4.wan_model_utils import (
-    _build_legacy_wan_init_kwargs,
-    _is_legacy_wan_config,
-    _load_legacy_wan_weights,
-    _load_wan_weight_index,
-    _read_json,
-    load_wan_model,
-)
+from hifloat4.wan_model_utils import load_wan_model
 from hifloat4.wan_rotation import block_diagonal_hadamard, register_rotation_hooks
 
 
@@ -66,13 +59,6 @@ def extract_first_frame(video_path: str) -> Optional[np.ndarray]:
 
 
 def save_video_frames_as_mp4(frames: np.ndarray, output_path: str, fps: int = 16):
-    """Save video frames as MP4 with proper uint8 conversion.
-
-    The Wan pipeline outputs float32 frames in [0, 1] range via
-    ``postprocess_video``.  We convert to uint8 before saving to avoid
-    lossy-conversion warnings and ensure maximum encoded quality.
-    """
-    # Convert float32 [0,1] → uint8 [0,255] if needed
     if frames.dtype in (np.float32, np.float64):
         frames = np.clip(frames * 255.0, 0, 255).astype(np.uint8)
 
@@ -90,12 +76,6 @@ def save_video_frames_as_mp4(frames: np.ndarray, output_path: str, fps: int = 16
 
 
 def _convert_wan_t5_to_diffusers(state_dict):
-    """Convert Wan T5 checkpoint keys to UMT5EncoderModel state dict keys.
-
-    Wan uses a custom T5 encoder with keys like ``blocks.{i}.attn.q.weight``
-    while HuggingFace UMT5EncoderModel expects keys like
-    ``encoder.block.{i}.layer.0.SelfAttention.q.weight``.
-    """
     mapping = {}
     for wan_key in state_dict:
         new_key = wan_key
@@ -107,32 +87,32 @@ def _convert_wan_t5_to_diffusers(state_dict):
             new_key = "encoder.final_layer_norm.weight"
 
         elif new_key.startswith("blocks."):
-            # blocks.{i}.xxx → encoder.block.{i}.xxx
+            # blocks.{i}.xxx -> encoder.block.{i}.xxx
             new_key = new_key.replace("blocks.", "encoder.block.", 1)
 
-            # pos_embedding.embedding → layer.0.SelfAttention.relative_attention_bias
+            # pos_embedding.embedding -> layer.0.SelfAttention.relative_attention_bias
             new_key = new_key.replace(".pos_embedding.embedding.weight",
                                       ".layer.0.SelfAttention.relative_attention_bias.weight")
 
-            # norm1 → layer.0.layer_norm
+            # norm1 -> layer.0.layer_norm
             new_key = new_key.replace(".norm1.", ".layer.0.layer_norm.")
 
-            # norm2 → layer.1.layer_norm
+            # norm2 -> layer.1.layer_norm
             new_key = new_key.replace(".norm2.", ".layer.1.layer_norm.")
 
-            # attn.q → layer.0.SelfAttention.q
+            # attn.q -> layer.0.SelfAttention.q
             new_key = new_key.replace(".attn.q.", ".layer.0.SelfAttention.q.")
             new_key = new_key.replace(".attn.k.", ".layer.0.SelfAttention.k.")
             new_key = new_key.replace(".attn.v.", ".layer.0.SelfAttention.v.")
             new_key = new_key.replace(".attn.o.", ".layer.0.SelfAttention.o.")
 
-            # ffn.gate.0 → layer.1.DenseReluDense.wi_1
+            # ffn.gate.0 -> layer.1.DenseReluDense.wi_1
             new_key = new_key.replace(".ffn.gate.0.", ".layer.1.DenseReluDense.wi_1.")
 
-            # ffn.fc1 → layer.1.DenseReluDense.wi_0
+            # ffn.fc1 -> layer.1.DenseReluDense.wi_0
             new_key = new_key.replace(".ffn.fc1.", ".layer.1.DenseReluDense.wi_0.")
 
-            # ffn.fc2 → layer.1.DenseReluDense.wo
+            # ffn.fc2 -> layer.1.DenseReluDense.wo
             new_key = new_key.replace(".ffn.fc2.", ".layer.1.DenseReluDense.wo.")
 
         elif new_key.startswith("pos_embedding"):
@@ -146,9 +126,6 @@ def _convert_wan_t5_to_diffusers(state_dict):
         if wan_key in mapping:
             converted[mapping[wan_key]] = tensor
 
-    # UMT5EncoderModel expects shared.weight (weight-tied with embed_tokens).
-    # The Wan checkpoint only has token_embedding.weight, so we add shared.weight
-    # as an alias to satisfy load_state_dict with strict=False.
     if "encoder.embed_tokens.weight" in converted and "shared.weight" not in converted:
         converted["shared.weight"] = converted["encoder.embed_tokens.weight"]
 
@@ -236,7 +213,13 @@ def _load_quantized_transformer(model_path: str, quantized_path: str,
                                  subdir: str = "high_noise_model"):
     from hif4_gpu.quant_cy.utils.utils import replace_linear
 
-    meta_path = os.path.join(quantized_path, "quantization_metadata.json")
+    subdir_path = os.path.join(quantized_path, subdir)
+    if os.path.isfile(os.path.join(subdir_path, "quantization_metadata.json")):
+        ckpt_dir = subdir_path
+    else:
+        ckpt_dir = quantized_path
+
+    meta_path = os.path.join(ckpt_dir, "quantization_metadata.json")
     with open(meta_path, "r") as f:
         metadata = json.load(f)
 
@@ -244,28 +227,10 @@ def _load_quantized_transformer(model_path: str, quantized_path: str,
     rotation_mode = metadata.get("rotation_mode", "none")
     rotation_seed = int(metadata.get("rotation_seed", 42))
     use_rotation = rotation_mode != "none"
-    # Restore the same high-precision layers that were excluded during quantization.
-    # If the metadata doesn't have this field (old checkpoints), default to empty.
     high_precision_layers = metadata.get("high_precision_layers", [])
 
-    print(f"[Pipeline] Loading transformer ({subdir}) from {model_path} ...")
-    if subdir == "low_noise_model":
-        load_dir = os.path.join(model_path, "low_noise_model")
-        raw_cfg = _read_json(os.path.join(load_dir, "config.json"))
-        if _is_legacy_wan_config(raw_cfg):
-            from diffusers.models.transformers.transformer_wan import WanTransformer3DModel
-            weight_map = _load_wan_weight_index(load_dir)
-            init_kwargs = _build_legacy_wan_init_kwargs(load_dir, raw_cfg, weight_map)
-            transformer = WanTransformer3DModel(**init_kwargs)
-            _load_legacy_wan_weights(transformer, load_dir, weight_map)
-        else:
-            from diffusers.models.transformers.transformer_wan import WanTransformer3DModel
-            transformer = WanTransformer3DModel.from_pretrained(
-                load_dir, torch_dtype=dtype, low_cpu_mem_usage=True)
-        transformer = transformer.to(device=device, dtype=dtype)
-        transformer.eval()
-    else:
-        transformer = load_wan_model(model_path, device=device, dtype=dtype)
+    print(f"[Pipeline] Loading transformer ({subdir}) from {model_path}/{subdir} ...")
+    transformer = load_wan_model(model_path, device=device, dtype=dtype, subdir=subdir)
 
     print(f"[Pipeline] Applying {quant_type} quantization structure to {subdir}...")
     if high_precision_layers:
@@ -275,7 +240,7 @@ def _load_quantized_transformer(model_path: str, quantized_path: str,
     replace_linear(transformer, w_Q=quant_type, in_Q=quant_type,
                    quant_grad=False, exclude_layers=high_precision_layers)
 
-    ckpt_path = os.path.join(quantized_path, "quantized_transformer.pt")
+    ckpt_path = os.path.join(ckpt_dir, "quantized_transformer.pt")
     print(f"[Pipeline] Loading weights from {ckpt_path} ...")
     payload = torch.load(ckpt_path, map_location="cpu")
     state_dict = payload["model_state_dict"] if isinstance(payload, dict) and "model_state_dict" in payload else payload
@@ -288,7 +253,7 @@ def _load_quantized_transformer(model_path: str, quantized_path: str,
 
     transformer.eval()
 
-    if use_rotation and subdir == "high_noise_model":
+    if use_rotation:
         H_dict = {}
         in_features_set = set()
         for _name, module in transformer.named_modules():
@@ -300,16 +265,13 @@ def _load_quantized_transformer(model_path: str, quantized_path: str,
         hooks = register_rotation_hooks(transformer, H_dict)
         print(f"[Pipeline] Registered {len(hooks)} FWHT rotation hooks on {subdir}")
 
-    # --- P0: Offline weight pre-quantization for inference speed ---
-    # Weight is static during inference, so quant-dequant it once here
-    # instead of every forward pass.  Stored as BF16 for Tensor Core matmul.
     from hif4_gpu.quant_cy.layers.QLinear import QLinear as _QLinear
     n_prequantized = 0
     for _name, module in transformer.named_modules():
         if isinstance(module, _QLinear):
             module.prequantize()
             n_prequantized += 1
-    print(f"[Pipeline] Pre-quantized {n_prequantized} QLinear layers "
+    print(f"[Pipeline] Pre-quantized {n_prequantized} QLinear layers on {subdir} "
           f"(weight → BF16, inference-only path active)")
 
     del payload, state_dict
@@ -319,49 +281,12 @@ def _load_quantized_transformer(model_path: str, quantized_path: str,
 
 def build_bf16_pipeline(model_path: str, device: str, dtype: torch.dtype):
     from diffusers.pipelines.wan.pipeline_wan_i2v import WanImageToVideoPipeline
-    from diffusers.schedulers import UniPCMultistepScheduler
 
     transformer = _load_bf16_transformer(model_path, device, dtype, "high_noise_model")
     transformer_2 = _load_bf16_transformer(model_path, device, dtype, "low_noise_model")
     tokenizer, text_encoder = _load_t5_encoder(model_path, device, dtype)
     vae = _load_vae(model_path, device, dtype)
-    # NOTE: Wan 2.2 I2V does NOT use CLIP image encoder!
-    # model_index.json declares image_encoder: [null, null]
-    # The pipeline checks transformer.config.image_dim and skips CLIP when it's None.
-    # Passing None saves ~1.6GB VRAM.
-
-    # Wan 2.2 I2V-A14B official scheduler config from HuggingFace
-    # Uses UniPCMultistepScheduler with flow_shift=3.0
-    scheduler = UniPCMultistepScheduler.from_config({
-        "_class_name": "UniPCMultistepScheduler",
-        "_diffusers_version": "0.35.0.dev0",
-        "beta_end": 0.02,
-        "beta_schedule": "linear",
-        "beta_start": 0.0001,
-        "disable_corrector": [],
-        "dynamic_thresholding_ratio": 0.995,
-        "final_sigmas_type": "zero",
-        "flow_shift": 3.0,
-        "lower_order_final": True,
-        "num_train_timesteps": 1000,
-        "predict_x0": True,
-        "prediction_type": "flow_prediction",
-        "rescale_betas_zero_snr": False,
-        "sample_max_value": 1.0,
-        "solver_order": 2,
-        "solver_p": None,
-        "solver_type": "bh2",
-        "steps_offset": 0,
-        "thresholding": False,
-        "time_shift_type": "exponential",
-        "timestep_spacing": "linspace",
-        "trained_betas": None,
-        "use_beta_sigmas": False,
-        "use_dynamic_shifting": False,
-        "use_exponential_sigmas": False,
-        "use_flow_sigmas": True,
-        "use_karras_sigmas": False,
-    })
+    scheduler = _build_scheduler()
 
     pipe = WanImageToVideoPipeline(
         tokenizer=tokenizer, text_encoder=text_encoder, vae=vae,
@@ -374,25 +299,9 @@ def build_bf16_pipeline(model_path: str, device: str, dtype: torch.dtype):
     return pipe
 
 
-def build_quantized_pipeline(model_path: str, quantized_path: str,
-                              device: str, dtype: torch.dtype):
-    from diffusers.pipelines.wan.pipeline_wan_i2v import WanImageToVideoPipeline
+def _build_scheduler():
     from diffusers.schedulers import UniPCMultistepScheduler
-
-    transformer = _load_quantized_transformer(
-        model_path, quantized_path, device, dtype, "high_noise_model")
-
-    # Pure quantization mode: skip low_noise_model to save ~28GB VRAM.
-    # The quantized high_noise_model handles ALL timesteps (boundary_ratio=None).
-    # This fits on a single H100 80GB.
-    print("[Pipeline] Skipping low_noise_model (pure quantization mode, saves ~28GB VRAM)")
-
-    tokenizer, text_encoder = _load_t5_encoder(model_path, device, dtype)
-    vae = _load_vae(model_path, device, dtype)
-    # NOTE: Wan 2.2 I2V does NOT use CLIP (image_encoder: [null, null] in model_index.json)
-
-    # Wan 2.2 I2V-A14B official scheduler config from HuggingFace
-    scheduler = UniPCMultistepScheduler.from_config({
+    return UniPCMultistepScheduler.from_config({
         "_class_name": "UniPCMultistepScheduler",
         "_diffusers_version": "0.35.0.dev0",
         "beta_end": 0.02,
@@ -423,6 +332,34 @@ def build_quantized_pipeline(model_path: str, quantized_path: str,
         "use_karras_sigmas": False,
     })
 
+
+def build_quantized_pipeline(model_path: str, quantized_path: str,
+                              device: str, dtype: torch.dtype):
+    from diffusers.pipelines.wan.pipeline_wan_i2v import WanImageToVideoPipeline
+
+    transformer = _load_quantized_transformer(
+        model_path, quantized_path, device, dtype, "high_noise_model")
+
+    low_noise_ckpt = os.path.join(quantized_path, "low_noise_model",
+                                   "quantization_metadata.json")
+    has_dual_model = os.path.isfile(low_noise_ckpt)
+
+    if has_dual_model:
+        print("[Pipeline] Dual-model layout detected — loading quantized low_noise_model")
+        transformer_2 = _load_quantized_transformer(
+            model_path, quantized_path, device, dtype, "low_noise_model")
+        boundary_ratio = 0.9
+    else:
+        print("[Pipeline] Single-model layout — quantized high_noise handles all timesteps")
+        transformer_2 = None
+        boundary_ratio = None
+
+    tokenizer, text_encoder = _load_t5_encoder(model_path, device, dtype)
+    vae = _load_vae(model_path, device, dtype)
+    # NOTE: Wan 2.2 I2V does NOT use CLIP (image_encoder: [null, null] in model_index.json)
+
+    scheduler = _build_scheduler()
+
     pipe = WanImageToVideoPipeline(
         tokenizer=tokenizer,
         text_encoder=text_encoder,
@@ -431,14 +368,19 @@ def build_quantized_pipeline(model_path: str, quantized_path: str,
         image_processor=None,
         image_encoder=None,
         transformer=transformer,
-        transformer_2=None,          # No second model — quantized handles all steps
-        boundary_ratio=None,         # No boundary — single model for all timesteps
+        transformer_2=transformer_2,
+        boundary_ratio=boundary_ratio,
         expand_timesteps=False,
     )
     pipe = pipe.to(device)
-    print("[Pipeline] Pure quantized I2V pipeline assembled successfully!")
-    print(f"  transformer (quantized W4A4): handles ALL timesteps")
-    print(f"  transformer_2: None (saves ~28GB VRAM)")
-    print(f"  boundary_ratio=None (single-model mode)")
+    print("[Pipeline] Quantized I2V pipeline assembled successfully!")
+    if has_dual_model:
+        print(f"  transformer (quantized W4A4): handles timesteps with t ≥ {boundary_ratio}")
+        print(f"  transformer_2 (quantized W4A4): handles timesteps with t < {boundary_ratio}")
+        print(f"  boundary_ratio={boundary_ratio} (dual-model mode)")
+    else:
+        print(f"  transformer (quantized W4A4): handles ALL timesteps")
+        print(f"  transformer_2: None (single-model mode)")
+        print(f"  boundary_ratio=None")
     print(f"  CLIP: not loaded (Wan 2.2 I2V doesn't use it)")
     return pipe

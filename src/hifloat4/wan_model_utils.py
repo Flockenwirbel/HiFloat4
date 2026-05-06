@@ -1,6 +1,3 @@
-#!/usr/bin/env python3
-"""Shared Wan checkpoint loading helpers."""
-
 import gc
 import json
 import os
@@ -160,8 +157,13 @@ def _resolve_wan_load_dir(model_path: str) -> str:
     return model_path
 
 
-def load_wan_model(model_path: str, device: str = "cuda", dtype: torch.dtype = torch.bfloat16) -> nn.Module:
-    load_dir = _resolve_wan_load_dir(model_path)
+def load_wan_model(model_path: str, device: str = "cuda",
+                   dtype: torch.dtype = torch.bfloat16,
+                   subdir: str = None) -> nn.Module:
+    if subdir:
+        load_dir = os.path.join(model_path, subdir)
+    else:
+        load_dir = _resolve_wan_load_dir(model_path)
 
     print(f"[Loading] Wan 2.2 transformer from {load_dir} ...")
     config_path = os.path.join(load_dir, "config.json")

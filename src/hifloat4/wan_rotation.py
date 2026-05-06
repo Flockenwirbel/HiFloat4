@@ -1,6 +1,3 @@
-#!/usr/bin/env python3
-"""Hadamard rotation helpers for Wan quantization."""
-
 import math
 from typing import Dict, List, Tuple
 
@@ -97,8 +94,6 @@ def register_rotation_hooks(model: nn.Module, H_dict: Dict[int, torch.Tensor]) -
     dim_params: Dict[int, Tuple[List[int], List[torch.Tensor]]] = {}
 
     for name, module in model.named_modules():
-        # After replace_linear(), nn.Linear becomes QLinear (not an nn.Linear subclass).
-        # Use hasattr to detect any module with in_features that participates in the forward pass.
         if not isinstance(module, nn.Linear) and not hasattr(module, 'in_features'):
             continue
         in_f = getattr(module, 'in_features', None)

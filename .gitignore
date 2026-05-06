@@ -13,7 +13,8 @@ dist/
 *.log
 .ipynb_checkpoints/
 quantized_wan_output/
-generated_videos/
-generated_videos_bf16_baseline/
+generated_videos*/
+vbench_results/
 pyiqa_model/
 logs/
+.build_success

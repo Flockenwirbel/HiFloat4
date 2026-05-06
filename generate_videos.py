@@ -77,6 +77,7 @@ def main():
 
     generator = torch.Generator(device=args.device).manual_seed(args.seed)
     generated = 0
+    prompts_map = {}
 
     for idx, sample in enumerate(samples):
         video_path = sample.get("resolved_path") or sample.get("path") or sample.get("video_path")
@@ -115,15 +116,12 @@ def main():
 
             video_frames = result.frames[0]
 
-            # Safety net: Replace first frame with input image to ensure pixel-perfect
-            # consistency. With expand_timesteps=True the first frame latent is already
-            # protected during denoising, but VAE encode/decode may still introduce
-            # minor color shifts. Keeping this replacement as a safeguard.
             input_array = np.array(image.resize((width, height)))
             if input_array.shape[-1] == 3:  # RGB
                 video_frames[0] = input_array / 255.0  # Normalize to [0, 1]
 
             save_video_frames_as_mp4(video_frames, output_path, fps=args.fps)
+            prompts_map[f"{sample_id}.mp4"] = caption
             generated += 1
             print(f"    Saved: {output_path} ({len(video_frames)} frames)")
 
@@ -154,6 +152,13 @@ def main():
     meta_path = os.path.join(args.output_dir, "generation_metadata.json")
     with open(meta_path, "w") as f:
         json.dump(meta, f, indent=2)
+
+    # Save prompts mapping for VBench evaluation
+    if prompts_map:
+        prompts_path = os.path.join(args.output_dir, "video_prompts.json")
+        with open(prompts_path, "w") as f:
+            json.dump(prompts_map, f, indent=2, ensure_ascii=False)
+        print(f"  Prompts saved: {prompts_path} ({len(prompts_map)} entries)")
 
 
 if __name__ == "__main__":
